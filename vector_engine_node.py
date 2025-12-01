@@ -2,6 +2,7 @@ import http.client
 import json
 import base64
 import time
+import os
 import numpy as np
 import torch
 from PIL import Image
@@ -14,7 +15,14 @@ class VectorEngineImageGenerator:
     """
     
     def __init__(self):
-        self.api_key = "sk-RZBLe4v8MolmD3fwOd6vdRTCaj7PohDhf4f44UNgWHEAA4zF"
+        # Read API key from environment variable
+        self.api_key = os.getenv("VECTOR_ENGINE_API_KEY")
+        if not self.api_key:
+            raise ValueError(
+                "VECTOR_ENGINE_API_KEY environment variable is not set. "
+                "Please set it before using this node: "
+                "export VECTOR_ENGINE_API_KEY='your-api-key-here'"
+            )
     
     @classmethod
     def INPUT_TYPES(cls):
