@@ -151,8 +151,7 @@ class VectorEngineImageGenerator:
                     "imageConfig": {
                         "aspectRatio": aspect_ratio,
                         "imageSize": image_size
-                    },
-                    "seed": seed
+                    }
                 }
             })
             
