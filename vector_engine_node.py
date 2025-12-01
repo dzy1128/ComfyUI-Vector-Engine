@@ -54,10 +54,16 @@ class VectorEngineImageGenerator:
     FUNCTION = "generate_image"
     CATEGORY = "VectorEngine"
     
-    def tensor_to_base64(self, tensor, mime_type="image/png"):
+    def tensor_to_base64(self, tensor, mime_type="image/jpeg", max_size=2048, quality=85):
         """
-        Convert ComfyUI image tensor to base64 string
+        Convert ComfyUI image tensor to base64 string with optimization
         tensor shape: [batch, height, width, channels] with values in [0, 1]
+        
+        Args:
+            tensor: Image tensor
+            mime_type: Output mime type (default JPEG for better compression)
+            max_size: Maximum dimension (width or height) in pixels
+            quality: JPEG quality (1-100, default 85 for good balance)
         """
         # Take first image if batch
         if len(tensor.shape) == 4:
@@ -69,18 +75,32 @@ class VectorEngineImageGenerator:
         # Convert to PIL Image
         pil_image = Image.fromarray(numpy_image)
         
-        # Convert to bytes
+        # Resize if image is too large
+        width, height = pil_image.size
+        if max(width, height) > max_size:
+            if width > height:
+                new_width = max_size
+                new_height = int(height * (max_size / width))
+            else:
+                new_height = max_size
+                new_width = int(width * (max_size / height))
+            
+            pil_image = pil_image.resize((new_width, new_height), Image.LANCZOS)
+        
+        # Convert to RGB if needed (for JPEG)
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
+        # Save with compression
         buffer = io.BytesIO()
-        if "png" in mime_type:
-            pil_image.save(buffer, format="PNG")
-        else:
-            pil_image.save(buffer, format="JPEG")
+        # Always use JPEG for better compression and faster upload
+        pil_image.save(buffer, format="JPEG", quality=quality, optimize=True)
         
         # Encode to base64
         img_bytes = buffer.getvalue()
         base64_str = base64.b64encode(img_bytes).decode('utf-8')
         
-        return base64_str, mime_type
+        return base64_str, "image/jpeg"
     
     def base64_to_tensor(self, base64_str):
         """
@@ -109,8 +129,6 @@ class VectorEngineImageGenerator:
         """
         Main function to generate image using Vector Engine API
         """
-        start_time = time.time()
-        
         try:
             # Prepare connection
             conn = http.client.HTTPSConnection("api.vectorengine.ai")
@@ -127,10 +145,21 @@ class VectorEngineImageGenerator:
             # Add images if provided
             images = [image_1, image_2, image_3, image_4, image_5]
             image_count = 0
+            
+            print(f"[VectorEngine] Processing {sum(1 for img in images if img is not None)} input images...")
+            
             for idx, img in enumerate(images, 1):
                 if img is not None:
                     image_count += 1
-                    base64_data, mime_type = self.tensor_to_base64(img, "image/png")
+                    encode_start = time.time()
+                    # Use optimized compression: max 2048px, 85% quality JPEG
+                    base64_data, mime_type = self.tensor_to_base64(img, max_size=2048, quality=85)
+                    encode_time = time.time() - encode_start
+                    
+                    # Calculate compressed size
+                    data_size_kb = len(base64_data) / 1024
+                    print(f"[VectorEngine] Image {idx}: encoded in {encode_time:.2f}s, size: {data_size_kb:.1f}KB")
+                    
                     parts.append({
                         "inline_data": {
                             "mime_type": mime_type,
@@ -160,6 +189,13 @@ class VectorEngineImageGenerator:
                 'Content-Type': 'application/json'
             }
             
+            # Calculate payload size
+            payload_size_mb = len(payload) / (1024 * 1024)
+            print(f"[VectorEngine] Sending request to API (payload size: {payload_size_mb:.2f}MB)...")
+            
+            # Record start time right before API request
+            start_time = time.time()
+            
             # Make API request
             conn.request("POST", 
                         f"/v1beta/models/gemini-3-pro-image-preview:generateContent?key={self.api_key}",
@@ -168,11 +204,13 @@ class VectorEngineImageGenerator:
             res = conn.getresponse()
             data = res.read()
             
+            # Record end time right after receiving response
+            api_generation_time = time.time() - start_time
+            
+            print(f"[VectorEngine] API request completed in {api_generation_time:.2f}s")
+            
             # Parse response
             response_json = json.loads(data.decode("utf-8"))
-            
-            # Calculate generation time
-            generation_time = time.time() - start_time
             
             # Extract image from response
             candidates = response_json.get("candidates", [])
@@ -184,7 +222,7 @@ class VectorEngineImageGenerator:
                     model_name="gemini-3-pro-image-preview",
                     aspect_ratio=aspect_ratio,
                     image_size=image_size,
-                    generation_time=generation_time,
+                    generation_time=api_generation_time,
                     success=False,
                     error_message=error_msg,
                     input_images=image_count,
@@ -228,7 +266,7 @@ class VectorEngineImageGenerator:
                             aspect_ratio=aspect_ratio,
                             image_size=image_size,
                             resolution=f"{width}x{height}",
-                            generation_time=generation_time,
+                            generation_time=api_generation_time,
                             success=True,
                             input_images=image_count,
                             seed=seed
@@ -241,7 +279,7 @@ class VectorEngineImageGenerator:
                 model_name="gemini-3-pro-image-preview",
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
-                generation_time=generation_time,
+                generation_time=api_generation_time,
                 success=False,
                 error_message="No image found in API response",
                 input_images=image_count,
@@ -252,16 +290,20 @@ class VectorEngineImageGenerator:
             return (black_image, info_text)
             
         except Exception as e:
-            generation_time = time.time() - start_time
+            # If error occurred before API request, set generation time to 0
+            try:
+                error_generation_time = time.time() - start_time
+            except:
+                error_generation_time = 0.0
             
             info_text = self._format_info(
                 model_name="gemini-3-pro-image-preview",
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
-                generation_time=generation_time,
+                generation_time=error_generation_time,
                 success=False,
                 error_message=str(e),
-                input_images=sum(1 for img in images if img is not None),
+                input_images=sum(1 for img in [image_1, image_2, image_3, image_4, image_5] if img is not None),
                 seed=seed
             )
             
