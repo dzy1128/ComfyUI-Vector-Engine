@@ -153,6 +153,7 @@ class VectorEngineImageGenerator:
             # Add images if provided
             images = [image_1, image_2, image_3, image_4, image_5]
             image_count = 0
+            total_encode_time = 0.0
             
             print(f"[VectorEngine] Processing {sum(1 for img in images if img is not None)} input images...")
             
@@ -163,6 +164,7 @@ class VectorEngineImageGenerator:
                     # Use optimized compression: max 2048px, 85% quality JPEG
                     base64_data, mime_type = self.tensor_to_base64(img, max_size=2048, quality=85)
                     encode_time = time.time() - encode_start
+                    total_encode_time += encode_time
                     
                     # Calculate compressed size
                     data_size_kb = len(base64_data) / 1024
@@ -234,7 +236,9 @@ class VectorEngineImageGenerator:
                     success=False,
                     error_message=error_msg,
                     input_images=image_count,
-                    seed=seed
+                    seed=seed,
+                    encode_time=total_encode_time,
+                    decode_time=0.0
                 )
                 
                 # Return a black image as placeholder
@@ -262,8 +266,12 @@ class VectorEngineImageGenerator:
                         mime_type = part.get("mimeType", part.get("mime_type", "image/jpeg"))
                     
                     if img_base64:
-                        # Convert to tensor
+                        # Convert to tensor and record decode time
+                        decode_start = time.time()
                         output_tensor = self.base64_to_tensor(img_base64)
+                        decode_time = time.time() - decode_start
+                        
+                        print(f"[VectorEngine] Image decoded in {decode_time:.2f}s")
                         
                         # Get actual dimensions
                         _, height, width, _ = output_tensor.shape
@@ -277,7 +285,9 @@ class VectorEngineImageGenerator:
                             generation_time=api_generation_time,
                             success=True,
                             input_images=image_count,
-                            seed=seed
+                            seed=seed,
+                            encode_time=total_encode_time,
+                            decode_time=decode_time
                         )
                         
                         return (output_tensor, info_text)
@@ -291,7 +301,9 @@ class VectorEngineImageGenerator:
                 success=False,
                 error_message="No image found in API response",
                 input_images=image_count,
-                seed=seed
+                seed=seed,
+                encode_time=total_encode_time,
+                decode_time=0.0
             )
             
             black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
@@ -304,6 +316,12 @@ class VectorEngineImageGenerator:
             except:
                 error_generation_time = 0.0
             
+            # Get encode time if available
+            try:
+                error_encode_time = total_encode_time
+            except:
+                error_encode_time = 0.0
+            
             info_text = self._format_info(
                 model_name="gemini-3-pro-image-preview",
                 aspect_ratio=aspect_ratio,
@@ -312,7 +330,9 @@ class VectorEngineImageGenerator:
                 success=False,
                 error_message=str(e),
                 input_images=sum(1 for img in [image_1, image_2, image_3, image_4, image_5] if img is not None),
-                seed=seed
+                seed=seed,
+                encode_time=error_encode_time,
+                decode_time=0.0
             )
             
             # Return black image as placeholder
@@ -320,7 +340,8 @@ class VectorEngineImageGenerator:
             return (black_image, info_text)
     
     def _format_info(self, model_name, aspect_ratio, image_size, generation_time,
-                     success, resolution=None, error_message=None, input_images=0, seed=0):
+                     success, resolution=None, error_message=None, input_images=0, seed=0,
+                     encode_time=0.0, decode_time=0.0):
         """
         Format generation information as text
         """
@@ -339,7 +360,13 @@ class VectorEngineImageGenerator:
         lines.extend([
             f"Seed: {seed}",
             f"Input Images: {input_images}",
-            f"Generation Time: {generation_time:.2f}s",
+            "",
+            "--- Timing Information ---",
+            f"Image Encode Time: {encode_time:.3f}s",
+            f"API Generation Time: {generation_time:.2f}s",
+            f"Image Decode Time: {decode_time:.3f}s",
+            f"Total Time: {(encode_time + generation_time + decode_time):.2f}s",
+            "",
             f"Status: {'SUCCESS' if success else 'FAILED'}",
         ])
         
