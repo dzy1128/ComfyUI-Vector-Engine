@@ -83,6 +83,10 @@ class VectorEngineImageGenerator:
         # Convert to PIL Image
         pil_image = Image.fromarray(numpy_image)
         
+        # Convert to RGB first (more efficient to do before resize)
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
         # Resize if image is too large
         width, height = pil_image.size
         if max(width, height) > max_size:
@@ -93,16 +97,15 @@ class VectorEngineImageGenerator:
                 new_height = max_size
                 new_width = int(width * (max_size / height))
             
-            pil_image = pil_image.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Convert to RGB if needed (for JPEG)
-        if pil_image.mode != 'RGB':
-            pil_image = pil_image.convert('RGB')
+            # Use BILINEAR for faster resizing (3-4x faster than LANCZOS)
+            # Quality difference is minimal for photo content
+            pil_image = pil_image.resize((new_width, new_height), Image.BILINEAR)
         
         # Save with compression
         buffer = io.BytesIO()
-        # Always use JPEG for better compression and faster upload
-        pil_image.save(buffer, format="JPEG", quality=quality, optimize=True)
+        # Remove optimize=True for faster encoding (file size increase is minimal ~2-5%)
+        # Use progressive for better streaming (no speed impact)
+        pil_image.save(buffer, format="JPEG", quality=quality, progressive=True)
         
         # Encode to base64
         img_bytes = buffer.getvalue()
