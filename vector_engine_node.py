@@ -28,6 +28,9 @@ class VectorEngineImageGenerator:
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "model": (["gemini-3-pro-image-preview", "gpt-image-1.5"], {
+                    "default": "gemini-3-pro-image-preview"
+                }),
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": "Generate a creative image based on the provided pictures."
@@ -135,7 +138,7 @@ class VectorEngineImageGenerator:
         
         return tensor
     
-    def generate_image(self, prompt, system_prompt, aspect_ratio, image_size, seed,
+    def generate_image(self, model, prompt, system_prompt, aspect_ratio, image_size, seed,
                       image_1=None, image_2=None, image_3=None, image_4=None, image_5=None):
         """
         Main function to generate image using Vector Engine API
@@ -211,7 +214,7 @@ class VectorEngineImageGenerator:
             
             # Make API request
             conn.request("POST", 
-                        f"/v1beta/models/gemini-3-pro-image-preview:generateContent?key={self.api_key}",
+                        f"/v1beta/models/{model}:generateContent?key={self.api_key}",
                         payload, headers)
             
             res = conn.getresponse()
@@ -232,7 +235,7 @@ class VectorEngineImageGenerator:
                 # No candidates, check for error
                 error_msg = response_json.get("error", {}).get("message", "Unknown error")
                 info_text = self._format_info(
-                    model_name="gemini-3-pro-image-preview",
+                    model_name=model,
                     aspect_ratio=aspect_ratio,
                     image_size=image_size,
                     generation_time=api_generation_time,
@@ -281,7 +284,7 @@ class VectorEngineImageGenerator:
                         
                         # Format info text
                         info_text = self._format_info(
-                            model_name="gemini-3-pro-image-preview",
+                            model_name=model,
                             aspect_ratio=aspect_ratio,
                             image_size=image_size,
                             resolution=f"{width}x{height}",
@@ -297,7 +300,7 @@ class VectorEngineImageGenerator:
             
             # If we reach here, no image was found
             info_text = self._format_info(
-                model_name="gemini-3-pro-image-preview",
+                model_name=model,
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
                 generation_time=api_generation_time,
@@ -326,7 +329,7 @@ class VectorEngineImageGenerator:
                 error_encode_time = 0.0
             
             info_text = self._format_info(
-                model_name="gemini-3-pro-image-preview",
+                model_name=model,
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
                 generation_time=error_generation_time,
