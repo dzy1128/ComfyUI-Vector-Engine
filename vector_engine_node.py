@@ -183,6 +183,41 @@ class VectorEngineImageGenerator:
         
         return tensor
     
+    def _tensor_to_png_bytes(self, tensor, max_size=2048):
+        """
+        Convert ComfyUI image tensor to PNG bytes for multipart upload
+        """
+        # Take first image if batch
+        if len(tensor.shape) == 4:
+            tensor = tensor[0]
+        
+        # Convert to numpy and scale to 0-255
+        numpy_image = (tensor.cpu().numpy() * 255).astype(np.uint8)
+        
+        # Convert to PIL Image
+        pil_image = Image.fromarray(numpy_image)
+        
+        # Convert to RGB
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
+        # Resize if image is too large
+        width, height = pil_image.size
+        if max(width, height) > max_size:
+            if width > height:
+                new_width = max_size
+                new_height = int(height * (max_size / width))
+            else:
+                new_height = max_size
+                new_width = int(width * (max_size / height))
+            pil_image = pil_image.resize((new_width, new_height), Image.BILINEAR)
+        
+        # Save to bytes buffer as PNG
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format="PNG")
+        
+        return buffer.getvalue()
+    
     def generate_image(self, model, prompt, system_prompt, aspect_ratio, image_size, seed,
                       image_1=None, image_2=None, image_3=None, image_4=None, image_5=None):
         """
@@ -196,15 +231,22 @@ class VectorEngineImageGenerator:
         print(f"[VectorEngine] Using {api_type} API for model: {model}")
         
         if api_type == "openai":
-            return self._generate_image_openai(model, prompt, aspect_ratio, image_size, seed)
+            # Collect images for OpenAI API
+            images = [image_1, image_2, image_3, image_4, image_5]
+            input_images = [img for img in images if img is not None]
+            return self._generate_image_openai(model, prompt, aspect_ratio, image_size, seed, input_images)
         else:
             return self._generate_image_gemini(model, prompt, system_prompt, aspect_ratio, image_size, seed,
                                                image_1, image_2, image_3, image_4, image_5)
     
-    def _generate_image_openai(self, model, prompt, aspect_ratio, image_size, seed):
+    def _generate_image_openai(self, model, prompt, aspect_ratio, image_size, seed, input_images=None):
         """
         Generate image using OpenAI-style API (for gpt-image-1.5 and similar models)
+        Supports both generation (no images) and editing (with images)
         """
+        if input_images is None:
+            input_images = []
+        
         try:
             # Prepare connection
             conn = http.client.HTTPSConnection("api.vectorengine.ai")
@@ -212,21 +254,94 @@ class VectorEngineImageGenerator:
             # Get pixel size from mapping
             size = self.SIZE_MAPPING.get((aspect_ratio, image_size), "1024x1024")
             
-            print(f"[VectorEngine] OpenAI API - Size: {size}")
+            image_count = len(input_images)
+            total_encode_time = 0.0
             
-            # Build request payload
-            payload = json.dumps({
-                "model": model,
-                "prompt": prompt,
-                "size": size,
-                "n": 1
-            })
-            
-            headers = {
-                'Accept': 'application/json',
-                'Authorization': f'Bearer {self.api_key}',
-                'Content-Type': 'application/json'
-            }
+            # Determine endpoint and format based on whether images are provided
+            if image_count > 0:
+                # Use /v1/images/edits with multipart/form-data
+                endpoint = "/v1/images/edits"
+                print(f"[VectorEngine] OpenAI Edit API - Size: {size}, Images: {image_count}")
+                
+                # Build multipart form data
+                boundary = 'wL36Yn8afVp8Ag7AmP8qZ0SA4n1v9T'
+                dataList = []
+                
+                # Add images
+                for idx, img in enumerate(input_images):
+                    encode_start = time.time()
+                    
+                    # Convert tensor to PNG bytes
+                    img_bytes = self._tensor_to_png_bytes(img)
+                    
+                    encode_time = time.time() - encode_start
+                    total_encode_time += encode_time
+                    
+                    data_size_kb = len(img_bytes) / 1024
+                    print(f"[VectorEngine] Image {idx + 1}: encoded in {encode_time:.2f}s, size: {data_size_kb:.1f}KB")
+                    
+                    dataList.append(f'--{boundary}'.encode())
+                    dataList.append(f'Content-Disposition: form-data; name=image; filename=image_{idx + 1}.png'.encode())
+                    dataList.append(b'Content-Type: image/png')
+                    dataList.append(b'')
+                    dataList.append(img_bytes)
+                
+                # Add prompt
+                dataList.append(f'--{boundary}'.encode())
+                dataList.append(b'Content-Disposition: form-data; name=prompt;')
+                dataList.append(b'Content-Type: text/plain')
+                dataList.append(b'')
+                dataList.append(prompt.encode())
+                
+                # Add model
+                dataList.append(f'--{boundary}'.encode())
+                dataList.append(b'Content-Disposition: form-data; name=model;')
+                dataList.append(b'Content-Type: text/plain')
+                dataList.append(b'')
+                dataList.append(model.encode())
+                
+                # Add n
+                dataList.append(f'--{boundary}'.encode())
+                dataList.append(b'Content-Disposition: form-data; name=n;')
+                dataList.append(b'Content-Type: text/plain')
+                dataList.append(b'')
+                dataList.append(b'1')
+                
+                # Add size
+                dataList.append(f'--{boundary}'.encode())
+                dataList.append(b'Content-Disposition: form-data; name=size;')
+                dataList.append(b'Content-Type: text/plain')
+                dataList.append(b'')
+                dataList.append(size.encode())
+                
+                # End boundary
+                dataList.append(f'--{boundary}--'.encode())
+                dataList.append(b'')
+                
+                payload = b'\r\n'.join(dataList)
+                
+                headers = {
+                    'Accept': 'application/json',
+                    'Authorization': f'Bearer {self.api_key}',
+                    'Content-Type': f'multipart/form-data; boundary={boundary}'
+                }
+            else:
+                # Use /v1/images/generations with JSON
+                endpoint = "/v1/images/generations"
+                print(f"[VectorEngine] OpenAI Generation API - Size: {size}")
+                
+                payload = json.dumps({
+                    "model": model,
+                    "prompt": prompt,
+                    "size": size,
+                    "n": 1
+                })
+                
+                headers = {
+                    'Accept': 'application/json',
+                    'Authorization': f'Bearer {self.api_key}',
+                    'Content-Type': 'application/json'
+                }
             
             # Calculate payload size
             payload_size_kb = len(payload) / 1024
@@ -236,7 +351,7 @@ class VectorEngineImageGenerator:
             start_time = time.time()
             
             # Make API request
-            conn.request("POST", "/v1/images/generations", payload, headers)
+            conn.request("POST", endpoint, payload, headers)
             
             res = conn.getresponse()
             data = res.read()
@@ -259,9 +374,9 @@ class VectorEngineImageGenerator:
                     generation_time=api_generation_time,
                     success=False,
                     error_message=error_msg,
-                    input_images=0,
+                    input_images=image_count,
                     seed=seed,
-                    encode_time=0.0,
+                    encode_time=total_encode_time,
                     decode_time=0.0
                 )
                 black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
@@ -278,9 +393,9 @@ class VectorEngineImageGenerator:
                     generation_time=api_generation_time,
                     success=False,
                     error_message="No image data in response",
-                    input_images=0,
+                    input_images=image_count,
                     seed=seed,
-                    encode_time=0.0,
+                    encode_time=total_encode_time,
                     decode_time=0.0
                 )
                 black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
@@ -317,9 +432,9 @@ class VectorEngineImageGenerator:
                     generation_time=api_generation_time,
                     success=False,
                     error_message="Unknown response format",
-                    input_images=0,
+                    input_images=image_count,
                     seed=seed,
-                    encode_time=0.0,
+                    encode_time=total_encode_time,
                     decode_time=0.0
                 )
                 black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
@@ -347,9 +462,9 @@ class VectorEngineImageGenerator:
                 resolution=f"{width}x{height}",
                 generation_time=api_generation_time,
                 success=True,
-                input_images=0,
+                input_images=image_count,
                 seed=seed,
-                encode_time=0.0,
+                encode_time=total_encode_time,
                 decode_time=decode_time
             )
             
@@ -361,6 +476,13 @@ class VectorEngineImageGenerator:
             except:
                 error_generation_time = 0.0
             
+            try:
+                error_encode_time = total_encode_time
+                error_image_count = image_count
+            except:
+                error_encode_time = 0.0
+                error_image_count = 0
+            
             info_text = self._format_info(
                 model_name=model,
                 aspect_ratio=aspect_ratio,
@@ -368,9 +490,9 @@ class VectorEngineImageGenerator:
                 generation_time=error_generation_time,
                 success=False,
                 error_message=str(e),
-                input_images=0,
+                input_images=error_image_count,
                 seed=seed,
-                encode_time=0.0,
+                encode_time=error_encode_time,
                 decode_time=0.0
             )
             
