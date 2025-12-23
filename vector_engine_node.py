@@ -219,8 +219,7 @@ class VectorEngineImageGenerator:
                 "model": model,
                 "prompt": prompt,
                 "size": size,
-                "n": 1,
-                "response_format": "url"
+                "n": 1
             })
             
             headers = {
