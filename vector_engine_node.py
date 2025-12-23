@@ -31,33 +31,6 @@ class VectorEngineImageGenerator:
         },
     }
     
-    # Size mapping for OpenAI-style models (aspect_ratio + image_size -> pixel size)
-    SIZE_MAPPING = {
-        # 1K sizes
-        ("1:1", "1K"): "1024x1024",
-        ("2:3", "1K"): "1024x1536",
-        ("3:2", "1K"): "1536x1024",
-        ("4:3", "1K"): "1024x768",
-        ("3:4", "1K"): "768x1024",
-        ("16:9", "1K"): "1024x576",
-        ("9:16", "1K"): "576x1024",
-        # 2K sizes
-        ("1:1", "2K"): "2048x2048",
-        ("2:3", "2K"): "1536x2304",
-        ("3:2", "2K"): "2304x1536",
-        ("4:3", "2K"): "2048x1536",
-        ("3:4", "2K"): "1536x2048",
-        ("16:9", "2K"): "2048x1152",
-        ("9:16", "2K"): "1152x2048",
-        # 4K sizes
-        ("1:1", "4K"): "4096x4096",
-        ("2:3", "4K"): "2730x4096",
-        ("3:2", "4K"): "4096x2730",
-        ("4:3", "4K"): "4096x3072",
-        ("3:4", "4K"): "3072x4096",
-        ("16:9", "4K"): "4096x2304",
-        ("9:16", "4K"): "2304x4096",
-    }
     
     def __init__(self):
         # Read API key from environment variable
@@ -82,13 +55,18 @@ class VectorEngineImageGenerator:
                 }),
                 "system_prompt": ("STRING", {
                     "multiline": True,
-                    "default": "You are an AI assistant skilled in generating images and editing pictures."
+                    "default": "You are an AI assistant skilled in generating images and editing pictures. (Only for Gemini models)"
                 }),
+                # Gemini model size options
                 "aspect_ratio": (["1:1", "2:3", "3:2", "4:3", "3:4", "16:9", "9:16"], {
                     "default": "1:1"
                 }),
                 "image_size": (["1K", "2K", "4K"], {
                     "default": "1K"
+                }),
+                # GPT model size options (only used when model is gpt-image-1.5)
+                "gpt_size": (["1024x1024", "1536x1024", "1024x1536", "auto"], {
+                    "default": "1024x1024"
                 }),
                 "seed": ("INT", {
                     "default": 0,
@@ -218,7 +196,7 @@ class VectorEngineImageGenerator:
         
         return buffer.getvalue()
     
-    def generate_image(self, model, prompt, system_prompt, aspect_ratio, image_size, seed,
+    def generate_image(self, model, prompt, system_prompt, aspect_ratio, image_size, gpt_size, seed,
                       image_1=None, image_2=None, image_3=None, image_4=None, image_5=None):
         """
         Main function to generate image using Vector Engine API
@@ -234,12 +212,12 @@ class VectorEngineImageGenerator:
             # Collect images for OpenAI API
             images = [image_1, image_2, image_3, image_4, image_5]
             input_images = [img for img in images if img is not None]
-            return self._generate_image_openai(model, prompt, aspect_ratio, image_size, seed, input_images)
+            return self._generate_image_openai(model, prompt, gpt_size, seed, input_images)
         else:
             return self._generate_image_gemini(model, prompt, system_prompt, aspect_ratio, image_size, seed,
                                                image_1, image_2, image_3, image_4, image_5)
     
-    def _generate_image_openai(self, model, prompt, aspect_ratio, image_size, seed, input_images=None):
+    def _generate_image_openai(self, model, prompt, gpt_size, seed, input_images=None):
         """
         Generate image using OpenAI-style API (for gpt-image-1.5 and similar models)
         Supports both generation (no images) and editing (with images)
@@ -251,8 +229,15 @@ class VectorEngineImageGenerator:
             # Prepare connection
             conn = http.client.HTTPSConnection("api.vectorengine.ai")
             
-            # Get pixel size from mapping
-            size = self.SIZE_MAPPING.get((aspect_ratio, image_size), "1024x1024")
+            # Parse gpt_size to get actual size value
+            # Options: "1024x1024 (square)", "1536x1024 (landscape)", "1024x1536 (portrait)", "auto"
+            size_mapping = {
+                "1024x1024 (square)": "1024x1024",
+                "1536x1024 (landscape)": "1536x1024",
+                "1024x1536 (portrait)": "1024x1536",
+                "auto": "auto"
+            }
+            size = size_mapping.get(gpt_size, "1024x1024")
             
             image_count = len(input_images)
             total_encode_time = 0.0
@@ -369,8 +354,8 @@ class VectorEngineImageGenerator:
                 error_msg = response_json["error"].get("message", str(response_json["error"]))
                 info_text = self._format_info(
                     model_name=model,
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
+                    aspect_ratio="-",
+                    image_size=size,
                     generation_time=api_generation_time,
                     success=False,
                     error_message=error_msg,
@@ -388,8 +373,8 @@ class VectorEngineImageGenerator:
             if not data_list:
                 info_text = self._format_info(
                     model_name=model,
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
+                    aspect_ratio="-",
+                    image_size=size,
                     generation_time=api_generation_time,
                     success=False,
                     error_message="No image data in response",
@@ -427,8 +412,8 @@ class VectorEngineImageGenerator:
             else:
                 info_text = self._format_info(
                     model_name=model,
-                    aspect_ratio=aspect_ratio,
-                    image_size=image_size,
+                    aspect_ratio="-",
+                    image_size=size,
                     generation_time=api_generation_time,
                     success=False,
                     error_message="Unknown response format",
@@ -457,8 +442,8 @@ class VectorEngineImageGenerator:
             # Format info text
             info_text = self._format_info(
                 model_name=model,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
+                aspect_ratio="-",
+                image_size=size,
                 resolution=f"{width}x{height}",
                 generation_time=api_generation_time,
                 success=True,
@@ -479,14 +464,16 @@ class VectorEngineImageGenerator:
             try:
                 error_encode_time = total_encode_time
                 error_image_count = image_count
+                error_size = size
             except:
                 error_encode_time = 0.0
                 error_image_count = 0
+                error_size = "1024x1024"
             
             info_text = self._format_info(
                 model_name=model,
-                aspect_ratio=aspect_ratio,
-                image_size=image_size,
+                aspect_ratio="-",
+                image_size=error_size,
                 generation_time=error_generation_time,
                 success=False,
                 error_message=str(e),
