@@ -7,12 +7,57 @@ import numpy as np
 import torch
 from PIL import Image
 import io
+import urllib.request
 
 
 class VectorEngineImageGenerator:
     """
     ComfyUI node for Vector Engine Image Generation API
     """
+    
+    # Model configuration: defines API endpoints and parameter formats for each model
+    MODEL_CONFIG = {
+        "gemini-3-pro-image-preview": {
+            "api_type": "gemini",
+            "endpoint": "/v1beta/models/{model}:generateContent",
+            "supports_multi_image": True,
+            "supports_system_prompt": True,
+        },
+        "gpt-image-1.5": {
+            "api_type": "openai",
+            "endpoint": "/v1/images/generations",
+            "supports_multi_image": False,
+            "supports_system_prompt": False,
+        },
+    }
+    
+    # Size mapping for OpenAI-style models (aspect_ratio + image_size -> pixel size)
+    SIZE_MAPPING = {
+        # 1K sizes
+        ("1:1", "1K"): "1024x1024",
+        ("2:3", "1K"): "1024x1536",
+        ("3:2", "1K"): "1536x1024",
+        ("4:3", "1K"): "1024x768",
+        ("3:4", "1K"): "768x1024",
+        ("16:9", "1K"): "1024x576",
+        ("9:16", "1K"): "576x1024",
+        # 2K sizes
+        ("1:1", "2K"): "2048x2048",
+        ("2:3", "2K"): "1536x2304",
+        ("3:2", "2K"): "2304x1536",
+        ("4:3", "2K"): "2048x1536",
+        ("3:4", "2K"): "1536x2048",
+        ("16:9", "2K"): "2048x1152",
+        ("9:16", "2K"): "1152x2048",
+        # 4K sizes
+        ("1:1", "4K"): "4096x4096",
+        ("2:3", "4K"): "2730x4096",
+        ("3:2", "4K"): "4096x2730",
+        ("4:3", "4K"): "4096x3072",
+        ("3:4", "4K"): "3072x4096",
+        ("16:9", "4K"): "4096x2304",
+        ("9:16", "4K"): "2304x4096",
+    }
     
     def __init__(self):
         # Read API key from environment variable
@@ -142,6 +187,201 @@ class VectorEngineImageGenerator:
                       image_1=None, image_2=None, image_3=None, image_4=None, image_5=None):
         """
         Main function to generate image using Vector Engine API
+        Routes to appropriate API based on model type
+        """
+        # Get model configuration
+        model_config = self.MODEL_CONFIG.get(model, self.MODEL_CONFIG["gemini-3-pro-image-preview"])
+        api_type = model_config["api_type"]
+        
+        print(f"[VectorEngine] Using {api_type} API for model: {model}")
+        
+        if api_type == "openai":
+            return self._generate_image_openai(model, prompt, aspect_ratio, image_size, seed)
+        else:
+            return self._generate_image_gemini(model, prompt, system_prompt, aspect_ratio, image_size, seed,
+                                               image_1, image_2, image_3, image_4, image_5)
+    
+    def _generate_image_openai(self, model, prompt, aspect_ratio, image_size, seed):
+        """
+        Generate image using OpenAI-style API (for gpt-image-1.5 and similar models)
+        """
+        try:
+            # Prepare connection
+            conn = http.client.HTTPSConnection("api.vectorengine.ai")
+            
+            # Get pixel size from mapping
+            size = self.SIZE_MAPPING.get((aspect_ratio, image_size), "1024x1024")
+            
+            print(f"[VectorEngine] OpenAI API - Size: {size}")
+            
+            # Build request payload
+            payload = json.dumps({
+                "model": model,
+                "prompt": prompt,
+                "size": size,
+                "n": 1,
+                "response_format": "url"
+            })
+            
+            headers = {
+                'Accept': 'application/json',
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Calculate payload size
+            payload_size_kb = len(payload) / 1024
+            print(f"[VectorEngine] Sending request to API (payload size: {payload_size_kb:.2f}KB)...")
+            
+            # Record start time
+            start_time = time.time()
+            
+            # Make API request
+            conn.request("POST", "/v1/images/generations", payload, headers)
+            
+            res = conn.getresponse()
+            data = res.read()
+            
+            # Record end time
+            api_generation_time = time.time() - start_time
+            
+            print(f"[VectorEngine] API request completed in {api_generation_time:.2f}s")
+            
+            # Parse response
+            response_json = json.loads(data.decode("utf-8"))
+            
+            # Check for error
+            if "error" in response_json:
+                error_msg = response_json["error"].get("message", str(response_json["error"]))
+                info_text = self._format_info(
+                    model_name=model,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    generation_time=api_generation_time,
+                    success=False,
+                    error_message=error_msg,
+                    input_images=0,
+                    seed=seed,
+                    encode_time=0.0,
+                    decode_time=0.0
+                )
+                black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+                return (black_image, info_text)
+            
+            # Extract image from response
+            data_list = response_json.get("data", [])
+            
+            if not data_list:
+                info_text = self._format_info(
+                    model_name=model,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    generation_time=api_generation_time,
+                    success=False,
+                    error_message="No image data in response",
+                    input_images=0,
+                    seed=seed,
+                    encode_time=0.0,
+                    decode_time=0.0
+                )
+                black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+                return (black_image, info_text)
+            
+            # Get first image
+            image_data = data_list[0]
+            
+            decode_start = time.time()
+            
+            # Handle URL response
+            if "url" in image_data:
+                image_url = image_data["url"]
+                print(f"[VectorEngine] Downloading image from URL...")
+                
+                # Download image from URL
+                req = urllib.request.Request(image_url)
+                with urllib.request.urlopen(req) as response:
+                    img_bytes = response.read()
+                
+                # Convert to PIL Image
+                pil_image = Image.open(io.BytesIO(img_bytes))
+                
+            # Handle base64 response
+            elif "b64_json" in image_data:
+                img_base64 = image_data["b64_json"]
+                img_bytes = base64.b64decode(img_base64)
+                pil_image = Image.open(io.BytesIO(img_bytes))
+            else:
+                info_text = self._format_info(
+                    model_name=model,
+                    aspect_ratio=aspect_ratio,
+                    image_size=image_size,
+                    generation_time=api_generation_time,
+                    success=False,
+                    error_message="Unknown response format",
+                    input_images=0,
+                    seed=seed,
+                    encode_time=0.0,
+                    decode_time=0.0
+                )
+                black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+                return (black_image, info_text)
+            
+            # Convert to RGB if necessary
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
+            
+            # Convert to tensor
+            numpy_image = np.array(pil_image).astype(np.float32) / 255.0
+            output_tensor = torch.from_numpy(numpy_image)[None,]
+            
+            decode_time = time.time() - decode_start
+            print(f"[VectorEngine] Image downloaded and decoded in {decode_time:.2f}s")
+            
+            # Get actual dimensions
+            _, height, width, _ = output_tensor.shape
+            
+            # Format info text
+            info_text = self._format_info(
+                model_name=model,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                resolution=f"{width}x{height}",
+                generation_time=api_generation_time,
+                success=True,
+                input_images=0,
+                seed=seed,
+                encode_time=0.0,
+                decode_time=decode_time
+            )
+            
+            return (output_tensor, info_text)
+            
+        except Exception as e:
+            try:
+                error_generation_time = time.time() - start_time
+            except:
+                error_generation_time = 0.0
+            
+            info_text = self._format_info(
+                model_name=model,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                generation_time=error_generation_time,
+                success=False,
+                error_message=str(e),
+                input_images=0,
+                seed=seed,
+                encode_time=0.0,
+                decode_time=0.0
+            )
+            
+            black_image = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+            return (black_image, info_text)
+    
+    def _generate_image_gemini(self, model, prompt, system_prompt, aspect_ratio, image_size, seed,
+                               image_1=None, image_2=None, image_3=None, image_4=None, image_5=None):
+        """
+        Generate image using Gemini-style API (for gemini models)
         """
         try:
             # Prepare connection
