@@ -322,6 +322,16 @@ class VectorEngineGPT(VectorEngineBase):
     Supports image generation and editing
     """
     
+    def __init__(self):
+        # GPT node uses a different API key
+        self.api_key = os.getenv("VECTOR_ENGINE_API_KEY_GPT")
+        if not self.api_key:
+            raise ValueError(
+                "VECTOR_ENGINE_API_KEY_GPT environment variable is not set. "
+                "Please set it before using this node: "
+                "export VECTOR_ENGINE_API_KEY_GPT='your-api-key-here'"
+            )
+    
     @classmethod
     def INPUT_TYPES(cls):
         return {
