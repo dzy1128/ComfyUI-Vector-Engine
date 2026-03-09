@@ -110,6 +110,9 @@ class VectorEngineGemini(VectorEngineBase):
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "model": (["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview"], {
+                    "default": "gemini-3-pro-image-preview"
+                }),
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": "Generate a creative image based on the provided pictures."
@@ -144,12 +147,11 @@ class VectorEngineGemini(VectorEngineBase):
     FUNCTION = "generate_image"
     CATEGORY = "VectorEngine"
     
-    def generate_image(self, prompt, system_prompt, aspect_ratio, image_size, seed,
+    def generate_image(self, model, prompt, system_prompt, aspect_ratio, image_size, seed,
                       image_1=None, image_2=None, image_3=None, image_4=None, image_5=None):
         """
         Generate image using Gemini API via Vector Engine
         """
-        model = "gemini-3-pro-image-preview"
         
         try:
             conn = http.client.HTTPSConnection("api.vectorengine.ai")
