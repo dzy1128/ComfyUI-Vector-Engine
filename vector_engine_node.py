@@ -121,8 +121,8 @@ class VectorEngineGemini(VectorEngineBase):
                     "multiline": True,
                     "default": "You are an AI assistant skilled in generating images and editing pictures."
                 }),
-                "aspect_ratio": (["Auto"", 1:1", "2:3", "3:2", "4:3", "3:4", "16:9", "9:16"], {
-                    "default": "1:1"
+                "aspect_ratio": (["Auto", "1:1", "2:3", "3:2", "4:3", "3:4", "16:9", "9:16"], {
+                    "default": "Auto"
                 }),
                 "image_size": (["1K", "2K", "4K"], {
                     "default": "1K"
